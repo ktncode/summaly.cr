@@ -504,6 +504,14 @@ get "/*" do |env|
   # Log request
   Log.info { "#{Time.utc.to_rfc3339} #{url} lang:#{lang} response_timeout:#{response_timeout} content_length_limit:#{content_length_limit} user_agent:#{user_agent}" }
   
+  # Check if URL is provided
+  if url.empty?
+    env.response.headers["X-Proxy-Error"] = "URL parameter is required"
+    config.append_headers_to(env.response.headers)
+    env.response.status_code = 400
+    next
+  end
+  
   # Handle special URLs
   if url.starts_with?("coffee://")
     env.response.headers["X-Proxy-Error"] = "I'm a teapot"
