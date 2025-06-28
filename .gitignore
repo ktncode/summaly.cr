@@ -1,0 +1,26 @@
+# Crystal
+/bin/
+/lib/
+/.shards/
+*.dwarf
+
+# Config
+config.json
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+/build/
+/dist/

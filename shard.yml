@@ -1,0 +1,24 @@
+name: summaly
+version: 1.0.0
+
+description: |
+  A Crystal implementation of Summaly for high-performance web page summarization
+
+authors:
+  - Kotone <git@ktn.works>
+
+license: MPL-2.0
+
+crystal: 1.7.3
+
+targets:
+  summaly:
+    main: src/main.cr
+
+dependencies:
+  kemal:
+    github: kemalcr/kemal
+    version: ~> 1.4.0
+  myhtml:
+    github: kostya/myhtml
+    version: ~> 1.5.2
