@@ -19,7 +19,7 @@ Create `config.json`:
 {
   "bind_addr": "0.0.0.0:3000",
   "timeout": 10000,
-  "user_agent": "Summaly.cr <https://github.com/ktncode/summaly.cr>",
+  "user_agent": "Summaly.cr/1.0 (+https://github.com/ktncode/summaly.cr)",
   "max_size": 5242880,
   "proxy": null,
   "media_proxy": null,
