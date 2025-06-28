@@ -4,7 +4,7 @@
 require "kemal"
 require "json"
 require "http/client"
-require "myhtml"
+require "xml"
 require "uri"
 require "log"
 
@@ -194,13 +194,12 @@ def process_html_content(response : HTTP::Client::Response, size_limit : UInt64)
   bytes_read = 0_u64
   
   # Read response in chunks to respect size limit
-  while chunk = response.body_io.read(Bytes.new(8192))
-    break if chunk.empty?
-    
-    bytes_read += chunk.size
+  chunk_buffer = Bytes.new(8192)
+  while (bytes_in_chunk = response.body_io.read(chunk_buffer)) > 0
+    bytes_read += bytes_in_chunk
     return nil if bytes_read > size_limit
     
-    buffer.write(chunk)
+    buffer.write(chunk_buffer[0, bytes_in_chunk])
   end
   
   content_bytes = buffer.to_slice
@@ -245,8 +244,31 @@ end
 def extract_metadata(html_content : String, base_uri : URI, config : ConfigFile, http_client : HTTP::Client, request_params : RequestParams) : SummalyResult
   base_url_str = "#{base_uri.scheme}://#{base_uri.host}#{base_uri.port ? ":#{base_uri.port}" : ""}"
   
-  result = SummalyResult.new(url: request_params.url)
-  player_data = SummalyPlayer.new
+  # Create result structure
+  result = SummalyResult.from_json(JSON.build do |json|
+    json.object do
+      json.field "url", request_params.url
+      json.field "title", nil
+      json.field "icon", nil
+      json.field "description", nil
+      json.field "thumbnail", nil
+      json.field "sitename", nil
+      json.field "player", {} of String => JSON::Any
+      json.field "sensitive", false
+      json.field "activityPub", nil
+      json.field "oembed", nil
+    end
+  end)
+  
+  # Create player data structure
+  player_data = SummalyPlayer.from_json(JSON.build do |json|
+    json.object do
+      json.field "url", nil
+      json.field "width", nil
+      json.field "height", nil
+      json.field "allow", [] of String
+    end
+  end)
 
   begin
     document = parse_html_document(html_content)
@@ -265,29 +287,31 @@ def extract_metadata(html_content : String, base_uri : URI, config : ConfigFile,
 end
 
 private def parse_html_document(html : String)
-  parser = Myhtml::Parser.new
-  document = parser.parse(html)
-  at_exit { parser.free }
-  document
+  XML.parse_html(html, XML::HTMLParserOptions::RECOVER | XML::HTMLParserOptions::NOERROR | XML::HTMLParserOptions::NOWARNING)
+rescue
+  # Return nil if parsing fails
+  nil
 end
 
 private def extract_title(document, result : SummalyResult)
-  if title_element = document.css("title").first?
-    title_text = title_element.inner_text.strip
+  return unless document
+  if title_element = document.xpath_node("//title")
+    title_text = title_element.text.strip
     result.title = title_text unless title_text.empty?
   end
 end
 
 private def process_meta_tags(document, result : SummalyResult, player_data : SummalyPlayer)
-  document.css("meta").each do |meta_tag|
+  return unless document
+  document.xpath_nodes("//meta").each do |meta_tag|
     process_meta_name_attributes(meta_tag, result)
     process_opengraph_properties(meta_tag, result, player_data)
   end
 end
 
 private def process_meta_name_attributes(meta_tag, result : SummalyResult)
-  name = meta_tag.attribute_by("name")
-  content = meta_tag.attribute_by("content").try { |c| decode_html_entities(c.strip) }
+  name = meta_tag["name"]?
+  content = meta_tag["content"]?.try { |c| decode_html_entities(c.strip) }
   
   return unless name && content
   
@@ -303,8 +327,8 @@ private def process_meta_name_attributes(meta_tag, result : SummalyResult)
 end
 
 private def process_opengraph_properties(meta_tag, result : SummalyResult, player_data : SummalyPlayer)
-  property = meta_tag.attribute_by("property")
-  content = meta_tag.attribute_by("content").try { |c| decode_html_entities(c.strip) }
+  property = meta_tag["property"]?
+  content = meta_tag["content"]?.try { |c| decode_html_entities(c.strip) }
   
   return unless property && content
   
@@ -322,10 +346,11 @@ private def process_opengraph_properties(meta_tag, result : SummalyResult, playe
 end
 
 private def process_link_tags(document, result : SummalyResult, base_uri : URI, base_url_str : String, config : ConfigFile, client : HTTP::Client)
-  document.css("link").each do |link_tag|
-    rel = link_tag.attribute_by("rel")
-    href = link_tag.attribute_by("href").try { |h| decode_html_entities(h.strip) }
-    link_type = link_tag.attribute_by("type")
+  return unless document
+  document.xpath_nodes("//link").each do |link_tag|
+    rel = link_tag["rel"]?
+    href = link_tag["href"]?.try { |h| decode_html_entities(h.strip) }
+    link_type = link_tag["type"]?
     
     next unless rel && href
     
@@ -419,8 +444,23 @@ def initialize_application
 
   # Create default configuration if none exists
   unless File.exists?(config_path)
-    default_config = ConfigFile.new
-    File.write(config_path, default_config.to_pretty_json)
+    default_config_json = JSON.build(indent: "  ") do |json|
+      json.object do
+        json.field "bind_addr", "0.0.0.0:3000"
+        json.field "timeout", 5000
+        json.field "user_agent", "Summaly.cr <https://github.com/ktncode/summaly.cr>"
+        json.field "max_size", 2097152
+        json.field "proxy", nil
+        json.field "media_proxy", nil
+        json.field "append_headers" do
+          json.array do
+            json.string "Content-Security-Policy:default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'"
+            json.string "Access-Control-Allow-Origin:*"
+          end
+        end
+      end
+    end
+    File.write(config_path, default_config_json)
     Log.info { "Created default configuration at #{config_path}" }
   end
 
@@ -438,29 +478,34 @@ Kemal.config.host_binding = config.bind_addr.split(':')[0]
 Kemal.config.port = config.bind_addr.split(':')[1].to_i
 
 get "/*" do |env|
-  params = RequestParams.new(url: "")
+  # Initialize request parameters
+  url = ""
+  lang : String? = nil
+  user_agent : String? = nil
+  response_timeout : UInt32? = nil
+  content_length_limit : UInt32? = nil
   
   # Parse query parameters
   env.params.query.each do |key, value|
     case key
     when "url"
-      params.url = value
+      url = value
     when "lang"
-      params.lang = value
+      lang = value
     when "userAgent"
-      params.user_agent = value
+      user_agent = value
     when "responseTimeout"
-      params.response_timeout = value.to_u32?
+      response_timeout = value.to_u32?
     when "contentLengthLimit"
-      params.content_length_limit = value.to_u32?
+      content_length_limit = value.to_u32?
     end
   end
   
   # Log request
-  Log.info { "#{Time.utc.to_rfc3339} #{params.url} lang:#{params.lang} response_timeout:#{params.response_timeout} content_length_limit:#{params.content_length_limit} user_agent:#{params.user_agent}" }
+  Log.info { "#{Time.utc.to_rfc3339} #{url} lang:#{lang} response_timeout:#{response_timeout} content_length_limit:#{content_length_limit} user_agent:#{user_agent}" }
   
   # Handle special URLs
-  if params.url.starts_with?("coffee://")
+  if url.starts_with?("coffee://")
     env.response.headers["X-Proxy-Error"] = "I'm a teapot"
     config.append_headers_to(env.response.headers)
     env.response.status_code = 418
@@ -468,11 +513,11 @@ get "/*" do |env|
   end
   
   # Check rate limiting
-  unless rate_limiter.request_allowed?(params.url)
+  unless rate_limiter.request_allowed?(url)
     retry_count = 0
     while retry_count < 3
       sleep 1.second
-      break if rate_limiter.request_allowed?(params.url)
+      break if rate_limiter.request_allowed?(url)
       retry_count += 1
     end
     
@@ -486,7 +531,7 @@ get "/*" do |env|
   
   begin
     # Create HTTP client
-    uri = URI.parse(params.url)
+    uri = URI.parse(url)
     unless uri.host
       env.response.headers["X-Proxy-Error"] = "Invalid URL"
       config.append_headers_to(env.response.headers)
@@ -496,17 +541,19 @@ get "/*" do |env|
     
     client = HTTP::Client.new(uri)
     client.connect_timeout = (config.timeout / 1000).seconds
-    client.read_timeout = (params.response_timeout || config.timeout.to_u32).seconds
+    client.read_timeout = (response_timeout || config.timeout.to_u32).seconds
     
     # Set headers
     headers = HTTP::Headers.new
-    headers["User-Agent"] = params.user_agent || config.user_agent
-    if lang = params.lang
+    headers["User-Agent"] = user_agent || config.user_agent
+    if lang
       headers["Accept-Language"] = lang
     end
     
     # Make request
-    response = client.get(uri.full_path, headers)
+    path = uri.path || "/"
+    path += "?#{uri.query}" if uri.query
+    response = client.get(path, headers)
     
     unless response.status_code == 200
       env.response.headers["X-Proxy-Error"] = "HTTP #{response.status_code}"
@@ -516,7 +563,7 @@ get "/*" do |env|
     end
     
     # Load response body
-    content_limit = (params.content_length_limit || config.max_size).to_u64
+    content_limit = (content_length_limit || config.max_size).to_u64
     html_content = process_html_content(response, content_limit)
     
     unless html_content
@@ -526,8 +573,19 @@ get "/*" do |env|
       next
     end
     
+    # Create RequestParams for extract_metadata
+    request_params = RequestParams.from_json(JSON.build do |json|
+      json.object do
+        json.field "url", url
+        json.field "lang", lang
+        json.field "userAgent", user_agent
+        json.field "responseTimeout", response_timeout
+        json.field "contentLengthLimit", content_length_limit
+      end
+    end)
+    
     # Parse metadata
-    result = extract_metadata(html_content, uri, config, client, params)
+    result = extract_metadata(html_content, uri, config, client, request_params)
     
     # Return JSON response
     env.response.content_type = "application/json"
@@ -537,12 +595,12 @@ get "/*" do |env|
     result.to_json
     
   rescue ex
-    Log.error { "Error processing #{params.url}: #{ex.message}" }
+    Log.error { "Error processing #{url}: #{ex.message}" }
     env.response.headers["X-Proxy-Error"] = ex.message || "Unknown error"
     config.append_headers_to(env.response.headers)
     env.response.status_code = 500
   ensure
-    rate_limiter.complete_request(params.url)
+    rate_limiter.complete_request(url)
   end
 end
 

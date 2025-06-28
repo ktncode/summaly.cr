@@ -20,12 +20,12 @@ describe "Summaly.cr" do
     end
   end
 
-  describe "solve_url" do
+  describe "resolve_relative_url" do
     it "resolves protocol-relative URLs" do
       base_url = URI.parse("https://example.com/path")
       base_url_str = "https://example.com"
       
-      result = solve_url("//cdn.example.com/image.png", base_url, base_url_str, nil, "")
+      result = resolve_relative_url("//cdn.example.com/image.png", base_url, base_url_str, nil, "")
       result.should eq("https://cdn.example.com/image.png")
     end
 
@@ -33,7 +33,7 @@ describe "Summaly.cr" do
       base_url = URI.parse("https://example.com/path")
       base_url_str = "https://example.com"
       
-      result = solve_url("/images/logo.png", base_url, base_url_str, nil, "")
+      result = resolve_relative_url("/images/logo.png", base_url, base_url_str, nil, "")
       result.should eq("https://example.com/images/logo.png")
     end
 
@@ -41,7 +41,7 @@ describe "Summaly.cr" do
       base_url = URI.parse("https://example.com/articles/")
       base_url_str = "https://example.com"
       
-      result = solve_url("../images/logo.png", base_url, base_url_str, nil, "")
+      result = resolve_relative_url("../images/logo.png", base_url, base_url_str, nil, "")
       result.should eq("https://example.com/images/logo.png")
     end
 
@@ -49,15 +49,24 @@ describe "Summaly.cr" do
       base_url = URI.parse("https://example.com")
       base_url_str = "https://example.com"
       
-      result = solve_url("https://example.com/image.jpg", base_url, base_url_str, "https://proxy.com/", "thumb.webp")
+      result = resolve_relative_url("https://example.com/image.jpg", base_url, base_url_str, "https://proxy.com/", "thumb.webp")
       result.should eq("https://proxy.com/thumb.webp?url=https%3A//example.com/image.jpg")
     end
   end
 
   describe "ConfigFile" do
-    it "serializes to JSON" do
-      config = ConfigFile.new
-      json = config.to_json
+    it "creates from JSON" do
+      json = %({
+        "bind_addr": "0.0.0.0:3000",
+        "timeout": 5000,
+        "user_agent": "Test Agent",
+        "max_size": 1048576,
+        "proxy": null,
+        "media_proxy": null,
+        "append_headers": []
+      })
+      config = ConfigFile.from_json(json)
+      config.bind_addr.should eq("0.0.0.0:3000")
       json.should contain("bind_addr")
       json.should contain("timeout")
     end
@@ -73,21 +82,21 @@ describe "Summaly.cr" do
   describe "RateLimit" do
     it "allows requests under limit" do
       rate_limiter = RateLimit.new
-      rate_limiter.can_request?("https://example.com").should be_true
-      rate_limiter.can_request?("https://example.com").should be_true
-      rate_limiter.can_request?("https://example.com").should be_true
+      rate_limiter.request_allowed?("https://example.com").should be_true
+      rate_limiter.request_allowed?("https://example.com").should be_true
+      rate_limiter.request_allowed?("https://example.com").should be_true
     end
 
     it "blocks requests over limit" do
       rate_limiter = RateLimit.new
-      3.times { rate_limiter.can_request?("https://example.com") }
-      rate_limiter.can_request?("https://example.com").should be_false
+      3.times { rate_limiter.request_allowed?("https://example.com") }
+      rate_limiter.request_allowed?("https://example.com").should be_false
     end
 
     it "handles different hosts separately" do
       rate_limiter = RateLimit.new
-      3.times { rate_limiter.can_request?("https://example.com") }
-      rate_limiter.can_request?("https://other.com").should be_true
+      3.times { rate_limiter.request_allowed?("https://example.com") }
+      rate_limiter.request_allowed?("https://other.com").should be_true
     end
   end
 end
