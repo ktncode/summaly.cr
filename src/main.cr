@@ -898,15 +898,22 @@ get "/*" do |env|
     dev_log { "Making request to #{url} with headers: User-Agent=#{headers["User-Agent"]}" }
     
     # Make request with automatic redirect following
-    path = uri.path || "/"
+    dev_log { "URI parsed: scheme=#{uri.scheme}, host=#{uri.host}, path=#{uri.path.inspect}, query=#{uri.query.inspect}" }
+    path = uri.path
+    if path.nil? || path.empty?
+      path = "/"
+    end
     path += "?#{uri.query}" if uri.query
     
-    final_response = client.get(path, headers)
+    dev_log { "Final path for request: '#{path}'" }
     
-    dev_log { "HTTP response: #{final_response.status_code} for #{url}" }
+    final_response, final_url = follow_redirects(client, path, headers, timeout_ms)
+    
+    # Log final URL after potential redirects
+    dev_log { "HTTP response: #{final_response.status_code} for #{url} (final URL: #{final_url})" }
     
     unless final_response.status_code == 200
-      dev_log { "Non-200 response: #{final_response.status_code} for #{url}" }
+      dev_log { "Non-200 response: #{final_response.status_code} for #{url} (final URL: #{final_url})" }
       env.response.headers["X-Proxy-Error"] = "HTTP #{final_response.status_code}"
       config.append_headers_to(env.response.headers)
       env.response.status_code = 502
@@ -1251,4 +1258,77 @@ private def detect_and_convert_encoding_with_charset(bytes : Bytes, charset_hint
   
   # Fallback to original detection method
   detect_and_convert_encoding(bytes)
+end
+
+# Handle HTTP redirects manually (up to max_redirects times)
+private def follow_redirects(client : HTTP::Client, path : String, headers : HTTP::Headers, timeout_ms : UInt64, max_redirects : Int32 = 5) : {HTTP::Client::Response, String}
+  dev_log { "follow_redirects called with path: '#{path}', host: #{client.host}" }
+  redirect_count = 0
+  # Ensure path is not empty
+  current_path = path.empty? ? "/" : path
+  dev_log { "Corrected current_path: '#{current_path}'" }
+  current_client = client
+  final_url = ""
+  timeout_duration = timeout_ms.milliseconds
+  
+  loop do
+    dev_log { "Making HTTP request to: #{current_path} on #{current_client.host}" }
+    response = current_client.get(current_path, headers)
+    
+    # Update final URL
+    if current_client.host
+      final_url = "#{current_client.tls? ? "https" : "http"}://#{current_client.host}#{current_client.port != (current_client.tls? ? 443 : 80) ? ":#{current_client.port}" : ""}#{current_path}"
+    end
+    
+    dev_log { "Response status: #{response.status_code}, final URL: #{final_url}" }
+    dev_log { "Response headers: #{response.headers.to_h}" }
+    
+    # Check if response is a redirect
+    case response.status_code
+    when 301, 302, 303, 307, 308
+      if redirect_count >= max_redirects
+        dev_log { "Maximum redirects (#{max_redirects}) exceeded" }
+        return {response, final_url}
+      end
+      
+      location = response.headers["Location"]?
+      dev_log { "Redirect detected: #{response.status_code}, Location: #{location}" }
+      unless location
+        dev_log { "Redirect response missing Location header" }
+        return {response, final_url}
+      end
+      
+      dev_log { "Following redirect #{redirect_count + 1}/#{max_redirects}: #{response.status_code} -> #{location}" }
+      
+      # Parse the new location
+      redirect_uri = URI.parse(location)
+      
+      dev_log { "Parsed redirect URI: scheme=#{redirect_uri.scheme}, host=#{redirect_uri.host}, path=#{redirect_uri.path}" }
+      
+      # Handle absolute vs relative URLs
+      if redirect_uri.host
+        # Absolute URL - create new client
+        dev_log { "Creating new client for absolute redirect to #{redirect_uri.host}" }
+        current_client.close if current_client != client
+        current_client = HTTP::Client.new(redirect_uri)
+        # Set timeout for new client
+        current_client.read_timeout = timeout_duration
+        current_path = redirect_uri.path || "/"
+        if query = redirect_uri.query
+          current_path += "?" + query
+        end
+      else
+        # Relative URL - use same client
+        current_path = location
+      end
+      
+      redirect_count += 1
+    else
+      # Not a redirect, return the response
+      if current_client != client
+        current_client.close
+      end
+      return {response, final_url}
+    end
+  end
 end
