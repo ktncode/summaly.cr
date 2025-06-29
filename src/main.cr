@@ -9,6 +9,13 @@ require "uri"
 require "log"
 require "compress/gzip"
 
+# ログ出力用マクロ（developmentモードでのみログを出力）
+macro dev_log(&block)
+  {% unless flag?(:release) %}
+    Log.info {{block}}
+  {% end %}
+end
+
 struct ConfigFile
   include JSON::Serializable
 
@@ -214,22 +221,22 @@ def process_html_content(response : HTTP::Client::Response, size_limit : UInt64)
   
   # Check for gzip encoding and decompress if needed
   content_encoding = response.headers["Content-Encoding"]?
-  Log.info { "Content-Encoding header: #{content_encoding}" }
+  dev_log { "Content-Encoding header: #{content_encoding}" }
   
   if content_encoding.try(&.downcase) == "gzip"
-    Log.info { "Decompressing gzip content" }
+    dev_log { "Decompressing gzip content" }
     begin
       decompressed_body = Compress::Gzip::Reader.open(IO::Memory.new(body)) do |gzip|
         gzip.gets_to_end
       end
       body = decompressed_body
-      Log.info { "Decompressed content length: #{body.size}" }
+      dev_log { "Decompressed content length: #{body.size}" }
     rescue ex
       Log.warn { "Failed to decompress gzip: #{ex.message}, using original body" }
       # gzip解凍に失敗した場合は元のbodyをそのまま使用
     end
   else
-    Log.info { "No gzip compression detected, using body as-is" }
+    dev_log { "No gzip compression detected, using body as-is" }
   end
   
   # Convert to bytes for encoding detection
@@ -237,7 +244,7 @@ def process_html_content(response : HTTP::Client::Response, size_limit : UInt64)
   
   # Extract charset information from meta tags first (before string conversion)
   charset = extract_charset_from_bytes(bytes)
-  Log.info { "Detected charset: #{charset}" } if charset
+  dev_log { "Detected charset: #{charset}" } if charset
   
   # Convert to string with detected encoding
   detect_and_convert_encoding_with_charset(bytes, charset)
@@ -250,31 +257,31 @@ private def detect_and_convert_encoding(bytes : Bytes) : String
     content = String.new(bytes, "UTF-8")
     # Test if the string is valid UTF-8 by attempting a simple operation
     content.size
-    Log.info { "Content is valid UTF-8" }
+    dev_log { "Content is valid UTF-8" }
     return content
   rescue
-    Log.info { "Content is not valid UTF-8, trying fallback encoding" }
+    dev_log { "Content is not valid UTF-8, trying fallback encoding" }
   end
   
   # Try with UTF-8 invalid skip first
   begin
     content = String.new(bytes, "UTF-8", invalid: :skip)
     if content.includes?("<html") || content.includes?("<HTML")
-      Log.info { "UTF-8 with invalid skip worked" }
+      dev_log { "UTF-8 with invalid skip worked" }
       return ensure_valid_utf8(content)
     end
   rescue
-    Log.info { "UTF-8 with invalid skip failed" }
+    dev_log { "UTF-8 with invalid skip failed" }
   end
   
   # Fallback to Latin-1
   begin
     content = String.new(bytes, "ISO-8859-1")
-    Log.info { "Using ISO-8859-1 fallback" }
+    dev_log { "Using ISO-8859-1 fallback" }
   rescue
     # Last resort: force UTF-8 conversion
     content = String.new(bytes, "UTF-8", invalid: :skip)
-    Log.info { "Using forced UTF-8 conversion" }
+    dev_log { "Using forced UTF-8 conversion" }
   end
   
   # Look for charset declarations in HTML meta tags with error handling
@@ -287,7 +294,7 @@ private def detect_and_convert_encoding(bytes : Bytes) : String
     begin
       if match = content.match(pattern)
         charset = match[1].downcase
-        Log.info { "Found charset declaration: #{charset}" }
+        dev_log { "Found charset declaration: #{charset}" }
         return handle_charset_conversion(bytes, charset)
       end
     rescue
@@ -332,7 +339,7 @@ def extract_metadata(html_content : String, base_uri : URI, config : ConfigFile,
   player_data = SummalyPlayer.new
 
   begin
-    Log.info { "Starting HTML metadata extraction, content length: #{html_content.size}" }
+    dev_log { "Starting HTML metadata extraction, content length: #{html_content.size}" }
     
     # HTMLコンテンツが大きすぎる場合は制限する（メモリエラー回避）
     if html_content.size > 1_000_000  # 1MBを超える場合
@@ -343,9 +350,9 @@ def extract_metadata(html_content : String, base_uri : URI, config : ConfigFile,
     # より安定したHTMLパース手法：<head>セクションを抽出してパースする
     extract_head_section_and_parse(html_content, result, player_data, base_uri, base_url_str, config, http_client)
     
-    Log.info { "Before finalize_result - player: #{result.player.inspect}" }
+    dev_log { "Before finalize_result - player: #{result.player.inspect}" }
     finalize_result(result, player_data, base_uri, base_url_str, config)
-    Log.info { "After finalize_result - player: #{result.player.inspect}" }
+    dev_log { "After finalize_result - player: #{result.player.inspect}" }
     
   rescue ex
     Log.warn { "HTML metadata extraction failed: #{ex.message}" }
@@ -355,28 +362,28 @@ def extract_metadata(html_content : String, base_uri : URI, config : ConfigFile,
 end
 
 private def parse_html_document(html : String)
-  Log.info { "Parsing HTML document, length: #{html.size}" }
+  dev_log { "Parsing HTML document, length: #{html.size}" }
   
   # HTMLコンテンツが空でないかチェック
   return nil if html.empty?
   
   # HTMLコンテンツのプレビューを安全に表示（500文字まで）
   preview_length = [500, html.size].min
-  Log.info { "HTML content preview: #{html[0...preview_length]}..." }
+  dev_log { "HTML content preview: #{html[0...preview_length]}..." }
   
   begin
     # より基本的なパースオプションを使用してメモリエラーを回避
     document = XML.parse_html(html, XML::HTMLParserOptions::RECOVER)
-    Log.info { "HTML parsing completed successfully" }
+    dev_log { "HTML parsing completed successfully" }
     
     # ドキュメント構造を安全にデバッグ
     if document && (root = document.root)
-      Log.info { "Document root element: #{root.name}" }
+      dev_log { "Document root element: #{root.name}" }
       
       # 要素数を安全にカウント
       begin
         all_elements = document.xpath_nodes("//*")
-        Log.info { "Total elements found: #{all_elements.size}" }
+        dev_log { "Total elements found: #{all_elements.size}" }
         
         # 最初の数個の要素名を安全に取得
         if all_elements.size > 0
@@ -385,7 +392,7 @@ private def parse_html_document(html : String)
           (0...first_count).each do |i|
             element_names << all_elements[i].name
           end
-          Log.info { "First #{first_count} elements: #{element_names.join(", ")}" }
+          dev_log { "First #{first_count} elements: #{element_names.join(", ")}" }
         end
       rescue ex
         Log.warn { "Failed to analyze document structure: #{ex.message}" }
@@ -456,24 +463,24 @@ end
 
 private def process_link_tags(document, result : SummalyResult, base_uri : URI, base_url_str : String, config : ConfigFile, client : HTTP::Client)
   return unless document
-  Log.info { "Processing link tags..." }
+  dev_log { "Processing link tags..." }
   
   # 複数の方法でリンクタグを検索
   link_nodes_1 = document.xpath_nodes("//link")
-  Log.info { "Found #{link_nodes_1.size} link nodes with XPath //link" }
+  dev_log { "Found #{link_nodes_1.size} link nodes with XPath //link" }
   
   link_nodes_2 = document.xpath_nodes("//html//link")
-  Log.info { "Found #{link_nodes_2.size} link nodes with XPath //html//link" }
+  dev_log { "Found #{link_nodes_2.size} link nodes with XPath //html//link" }
   
   link_nodes_3 = document.xpath_nodes("//*[local-name()='link']")
-  Log.info { "Found #{link_nodes_3.size} link nodes with XPath //*[local-name()='link']" }
+  dev_log { "Found #{link_nodes_3.size} link nodes with XPath //*[local-name()='link']" }
   
   # headタグも複数の方法で検索
   head_nodes_1 = document.xpath_nodes("//head")
-  Log.info { "Found #{head_nodes_1.size} head nodes with XPath //head" }
+  dev_log { "Found #{head_nodes_1.size} head nodes with XPath //head" }
   
   head_nodes_2 = document.xpath_nodes("//*[local-name()='head']")
-  Log.info { "Found #{head_nodes_2.size} head nodes with XPath //*[local-name()='head']" }
+  dev_log { "Found #{head_nodes_2.size} head nodes with XPath //*[local-name()='head']" }
   
   # 最初に見つかったリンクタグを使用
   link_nodes = link_nodes_1.size > 0 ? link_nodes_1 : (link_nodes_2.size > 0 ? link_nodes_2 : link_nodes_3)
@@ -485,14 +492,14 @@ private def process_link_tags(document, result : SummalyResult, base_uri : URI, 
     link_type = link_tag["type"]?
     link_count += 1
     
-    Log.info { "Link #{link_count}: rel=#{rel}, type=#{link_type}, href=#{href ? href[0..100] : "nil"}" }
+    dev_log { "Link #{link_count}: rel=#{rel}, type=#{link_type}, href=#{href ? href[0..100] : "nil"}" }
     
     next unless rel && href
     
     process_icon_links(rel, href, result)
     process_oembed_links(rel, link_type, href, result, base_uri, base_url_str, config, client)
   end
-  Log.info { "Total link tags processed: #{link_count}" }
+  dev_log { "Total link tags processed: #{link_count}" }
 end
 
 private def process_icon_links(rel : String, href : String, result : SummalyResult)
@@ -504,37 +511,37 @@ private def process_icon_links(rel : String, href : String, result : SummalyResu
 end
 
 private def process_oembed_links(rel : String, link_type : String?, href : String, result : SummalyResult, base_uri : URI, base_url_str : String, config : ConfigFile, client : HTTP::Client)
-  Log.info { "Processing link: rel=#{rel}, type=#{link_type}, href=#{href}" }
+  dev_log { "Processing link: rel=#{rel}, type=#{link_type}, href=#{href}" }
   
   # YouTubeはtype="application/json+oembed"または"text/xml+oembed"を使用する場合がある
   oembed_types = ["application/json+oembed", "text/xml+oembed"]
   return unless rel == "alternate" && link_type && oembed_types.includes?(link_type)
   
-  Log.info { "Found OEmbed link: #{href}" }
+  dev_log { "Found OEmbed link: #{href}" }
   oembed_url = resolve_relative_url(href, base_uri, base_url_str, nil, "")
   return unless oembed_url
   
-  Log.info { "Fetching OEmbed data from: #{oembed_url}" }
+  dev_log { "Fetching OEmbed data from: #{oembed_url}" }
   fetch_oembed_data(oembed_url, result, config, client)
 end
 
 private def fetch_oembed_data(oembed_url : String, result : SummalyResult, config : ConfigFile, client : HTTP::Client)
-  Log.info { "Fetching OEmbed from: #{oembed_url}" }
+  dev_log { "Fetching OEmbed from: #{oembed_url}" }
   oembed_response = client.get(oembed_url)
-  Log.info { "OEmbed response status: #{oembed_response.status_code}" }
+  dev_log { "OEmbed response status: #{oembed_response.status_code}" }
   return unless oembed_response.status_code == 200
   
   content = process_html_content(oembed_response, config.max_size.to_u64)
   return unless content
   
-  Log.info { "OEmbed content: #{content[0..200]}..." }
+  dev_log { "OEmbed content: #{content[0..200]}..." }
   
   # Determine OEmbed format and parse accordingly
   oembed_data = parse_oembed_content(content)
   return unless oembed_data
   
   result.oembed = oembed_data
-  Log.info { "OEmbed data: type=#{oembed_data.type}, html present=#{!oembed_data.html.nil?}" }
+  dev_log { "OEmbed data: type=#{oembed_data.type}, html present=#{!oembed_data.html.nil?}" }
   
   # Extract security-conscious iframe attributes
   extract_safe_iframe_attributes(oembed_data, result)
@@ -548,11 +555,11 @@ private def parse_oembed_content(content : String) : OEmbed?
   
   if trimmed_content.starts_with?('<')
     # XML format
-    Log.info { "Parsing OEmbed as XML format" }
+    dev_log { "Parsing OEmbed as XML format" }
     parse_oembed_xml(trimmed_content)
   else
     # JSON format
-    Log.info { "Parsing OEmbed as JSON format" }
+    dev_log { "Parsing OEmbed as JSON format" }
     begin
       OEmbed.from_json(trimmed_content)
     rescue ex
@@ -593,7 +600,7 @@ private def parse_oembed_xml(xml_content : String) : OEmbed?
     # Extract URL (for photo type)
     url = extract_xml_text(document, "//url")
     
-    Log.info { "Parsed XML OEmbed: type=#{type}, width=#{width}, height=#{height}, html present=#{!html.nil?}" }
+    dev_log { "Parsed XML OEmbed: type=#{type}, width=#{width}, height=#{height}, html present=#{!html.nil?}" }
     
     # Create OEmbed object using JSON building since we can't use new directly
     json_builder = JSON.build do |json|
@@ -634,12 +641,12 @@ end
 
 private def extract_safe_iframe_attributes(oembed_data : OEmbed, result : SummalyResult)
   return unless html_content = oembed_data.html
-  Log.info { "Extracting iframe from OEmbed HTML: #{html_content[0..200]}..." }
+  dev_log { "Extracting iframe from OEmbed HTML: #{html_content[0..200]}..." }
 
   # 既にplayerが設定されている場合はスキップ
   if player = result.player
     if player.as_h?.try(&.has_key?("url"))
-      Log.info { "Player already set, skipping OEmbed iframe extraction" }
+      dev_log { "Player already set, skipping OEmbed iframe extraction" }
       return
     end
   end
@@ -668,7 +675,7 @@ private def extract_safe_iframe_attributes(oembed_data : OEmbed, result : Summal
     if src_match = iframe_tag.match(/src\s*=\s*["']([^"']+)["']/i)
       src = src_match[1]
       player_json["url"] = JSON::Any.new(src)
-      Log.info { "Extracted iframe src: #{src}" }
+      dev_log { "Extracted iframe src: #{src}" }
     end
     
     # allow属性を抽出してセーフリストでフィルタ
@@ -680,7 +687,7 @@ private def extract_safe_iframe_attributes(oembed_data : OEmbed, result : Summal
           allow_features << feature
         end
       end
-      Log.info { "Extracted iframe allow: #{allow_features}" }
+      dev_log { "Extracted iframe allow: #{allow_features}" }
     end
   end
 
@@ -690,24 +697,24 @@ private def extract_safe_iframe_attributes(oembed_data : OEmbed, result : Summal
   # playerにURLがある場合のみ設定
   if player_json["url"]?
     result.player = JSON::Any.new(player_json)
-    Log.info { "Set player data: #{result.player}" }
-    Log.info { "Player set successfully, result.player is now: #{result.player.inspect}" }
-    Log.info { "Player type: #{result.player.class}" }
+    dev_log { "Set player data: #{result.player}" }
+    dev_log { "Player set successfully, result.player is now: #{result.player.inspect}" }
+    dev_log { "Player type: #{result.player.class}" }
   else
     Log.warn { "No iframe src found in OEmbed HTML, player not set" }
   end
 end
 
 private def finalize_result(result : SummalyResult, player_data : SummalyPlayer, base_uri : URI, base_url_str : String, config : ConfigFile)
-  Log.info { "finalize_result called - player at start: #{result.player.inspect}" }
-  Log.info { "player_data at start: url=#{player_data.url}, width=#{player_data.width}, height=#{player_data.height}" }
+  dev_log { "finalize_result called - player at start: #{result.player.inspect}" }
+  dev_log { "player_data at start: url=#{player_data.url}, width=#{player_data.width}, height=#{player_data.height}" }
   
   # OEmbedのplayerが優先。なければOpenGraph由来のplayer_dataを使う。
   # result.playerにURLが設定されていない場合のみOpenGraphデータを使用
   
   # playerが設定されているかチェック
   player_has_url = result.player.try { |p| p.as_h.has_key?("url") && !p.as_h["url"].as_s?.try(&.empty?) } || false
-  Log.info { "player_has_url check result: #{player_has_url}" }
+  dev_log { "player_has_url check result: #{player_has_url}" }
   
   if !player_has_url && player_data.url
     # OpenGraph由来のplayerデータをセット
@@ -722,11 +729,11 @@ private def finalize_result(result : SummalyResult, player_data : SummalyPlayer,
     player_json["allow"] = JSON::Any.new(player_data.allow.map { |f| JSON::Any.new(f) })
     
     result.player = JSON::Any.new(player_json)
-    Log.info { "Set OpenGraph player data: #{result.player}" }
+    dev_log { "Set OpenGraph player data: #{result.player}" }
   elsif player_has_url
-    Log.info { "Using OEmbed player data: #{result.player}" }
+    dev_log { "Using OEmbed player data: #{result.player}" }
   else
-    Log.info { "No player data available" }
+    dev_log { "No player data available" }
   end
 
   # Set default icon
@@ -735,7 +742,7 @@ private def finalize_result(result : SummalyResult, player_data : SummalyPlayer,
   # Resolve all relative URLs
   resolve_result_urls(result, base_uri, base_url_str, config)
   
-  Log.info { "finalize_result finished - final player: #{result.player.inspect}" }
+  dev_log { "finalize_result finished - final player: #{result.player.inspect}" }
 end
 
 private def resolve_result_urls(result : SummalyResult, base_uri : URI, base_url_str : String, config : ConfigFile)
@@ -775,7 +782,7 @@ def initialize_application
       end
     end
     File.write(config_path, default_config_json)
-    Log.info { "Created default configuration at #{config_path}" }
+    dev_log { "Created default configuration at #{config_path}" }
   end
 
   config = ConfigFile.from_json(File.read(config_path))
@@ -816,7 +823,7 @@ get "/*" do |env|
   end
   
   # Log request
-  Log.info { "#{Time.utc.to_rfc3339} #{url} lang:#{lang} response_timeout:#{response_timeout} content_length_limit:#{content_length_limit} user_agent:#{user_agent}" }
+  dev_log { "#{Time.utc.to_rfc3339} #{url} lang:#{lang} response_timeout:#{response_timeout} content_length_limit:#{content_length_limit} user_agent:#{user_agent}" }
   
   # Check if URL is provided
   if url.empty?
@@ -888,7 +895,7 @@ get "/*" do |env|
       headers["Accept-Language"] = lang
     end
     
-    Log.info { "Making request to #{url} with headers: User-Agent=#{headers["User-Agent"]}" }
+    dev_log { "Making request to #{url} with headers: User-Agent=#{headers["User-Agent"]}" }
     
     # Make request with automatic redirect following
     path = uri.path || "/"
@@ -896,10 +903,10 @@ get "/*" do |env|
     
     final_response = client.get(path, headers)
     
-    Log.info { "HTTP response: #{final_response.status_code} for #{url}" }
+    dev_log { "HTTP response: #{final_response.status_code} for #{url}" }
     
     unless final_response.status_code == 200
-      Log.warn { "Non-200 response: #{final_response.status_code} for #{url}" }
+      dev_log { "Non-200 response: #{final_response.status_code} for #{url}" }
       env.response.headers["X-Proxy-Error"] = "HTTP #{final_response.status_code}"
       config.append_headers_to(env.response.headers)
       env.response.status_code = 502
@@ -932,12 +939,12 @@ get "/*" do |env|
     result = extract_metadata(html_content, uri, config, client, request_params)
     
     # Debug: Log player data before JSON conversion
-    Log.info { "Final result before JSON conversion - player: #{result.player}" }
+    dev_log { "Final result before JSON conversion - player: #{result.player}" }
     if player = result.player
-      Log.info { "Player has_key url? #{player.as_h.has_key?("url")}" }
-      Log.info { "Player keys: #{player.as_h.keys}" }
+      dev_log { "Player has_key url? #{player.as_h.has_key?("url")}" }
+      dev_log { "Player keys: #{player.as_h.keys}" }
     else
-      Log.info { "Player is nil" }
+      dev_log { "Player is nil" }
     end
     
     # Return JSON response
@@ -948,8 +955,8 @@ get "/*" do |env|
     result.to_json
     
   rescue ex
-    Log.error { "Error processing #{url}: #{ex.message}" }
-    Log.error { "Backtrace: #{ex.backtrace?.try(&.join("\n"))}" }
+    dev_log { "Error processing #{url}: #{ex.message}" }
+    dev_log { "Backtrace: #{ex.backtrace?.try(&.join("\n"))}" }
     env.response.headers["X-Proxy-Error"] = ex.message || "Unknown error"
     config.append_headers_to(env.response.headers)
     env.response.status_code = 500
@@ -959,13 +966,13 @@ get "/*" do |env|
 end
 
 # Start server
-Log.info { "Starting Summaly.cr on #{config.bind_addr}" }
+dev_log { "Starting Summaly.cr on #{config.bind_addr}" }
 Kemal.run
 
 # Extract head section and parse it for better stability
 private def extract_head_section_and_parse(html_content : String, result : SummalyResult, player_data : SummalyPlayer, base_uri : URI, base_url_str : String, config : ConfigFile, client : HTTP::Client)
-  Log.info { "Extracting <head> section from HTML" }
-  Log.info { "HTML content preview (first 1000 chars): #{html_content[0...1000]}" }
+  dev_log { "Extracting <head> section from HTML" }
+  dev_log { "HTML content preview (first 1000 chars): #{html_content[0...1000]}" }
   
   # Find <head> section (case insensitive) - より柔軟な検索
   head_start_match = html_content.match(/<head[\s>]/i)
@@ -988,7 +995,7 @@ private def extract_head_section_and_parse(html_content : String, result : Summa
   end
   
   head_content = html_content[head_start...head_end]
-  Log.info { "Extracted head section, length: #{head_content.size}" }
+  dev_log { "Extracted head section, length: #{head_content.size}" }
   
   # Parse head content using simple regex-based parsing
   parse_head_content_simple(head_content, result, player_data, base_uri, base_url_str, config, client)
@@ -996,13 +1003,13 @@ end
 
 # Simple regex-based parsing of head content
 private def parse_head_content_simple(head_content : String, result : SummalyResult, player_data : SummalyPlayer, base_uri : URI, base_url_str : String, config : ConfigFile, client : HTTP::Client)
-  Log.info { "Parsing head content with regex approach" }
+  dev_log { "Parsing head content with regex approach" }
   
   # Extract title
   if title_match = head_content.match(/<title[^>]*>(.*?)<\/title>/im)
     title_text = decode_html_entities(title_match[1].strip)
     result.title = title_text unless title_text.empty?
-    Log.info { "Found title: #{title_text}" }
+    dev_log { "Found title: #{title_text}" }
   end
   
   # Extract meta tags
@@ -1071,11 +1078,11 @@ private def process_link_tag_simple(link_tag : String, result : SummalyResult, b
   
   # Process ActivityPub JSON-LD links (Misskey/Mastodon support)
   if link_type && link_type.downcase == "application/activity+json"
-    Log.info { "Found ActivityPub JSON-LD link: #{href}" }
+    dev_log { "Found ActivityPub JSON-LD link: #{href}" }
     activitypub_url = resolve_relative_url(href, base_uri, base_url_str, nil, "")
     if activitypub_url
       result.activity_pub = activitypub_url
-      Log.info { "Set ActivityPub URL: #{activitypub_url}" }
+      dev_log { "Set ActivityPub URL: #{activitypub_url}" }
     end
     return
   end
@@ -1089,10 +1096,10 @@ private def process_link_tag_simple(link_tag : String, result : SummalyResult, b
   when "apple-touch-icon" then result.thumbnail ||= href
   when "alternate"
     if link_type && (link_type.downcase == "application/json+oembed" || link_type.downcase == "text/xml+oembed")
-      Log.info { "Found OEmbed link: #{href}" }
+      dev_log { "Found OEmbed link: #{href}" }
       oembed_url = resolve_relative_url(href, base_uri, base_url_str, nil, "")
       if oembed_url
-        Log.info { "Fetching OEmbed data from: #{oembed_url}" }
+        dev_log { "Fetching OEmbed data from: #{oembed_url}" }
         fetch_oembed_data(oembed_url, result, config, client)
       end
     end
@@ -1118,13 +1125,13 @@ end
 
 # Parse full HTML content when head section is not found
 private def parse_full_html_content(html_content : String, result : SummalyResult, player_data : SummalyPlayer, base_uri : URI, base_url_str : String, config : ConfigFile, client : HTTP::Client)
-  Log.info { "Parsing full HTML content as fallback" }
+  dev_log { "Parsing full HTML content as fallback" }
   
   # Extract title from anywhere in the document
   if title_match = html_content.match(/<title[^>]*>(.*?)<\/title>/im)
     title_text = decode_html_entities(title_match[1].strip)
     result.title = title_text unless title_text.empty?
-    Log.info { "Found title: #{title_text}" }
+    dev_log { "Found title: #{title_text}" }
   else
     Log.warn { "No title found in HTML" }
   end
@@ -1137,7 +1144,7 @@ private def parse_full_html_content(html_content : String, result : SummalyResul
     meta_count += 1
     process_meta_tag_simple(meta_tag, result, player_data)
   end
-  Log.info { "Found #{meta_count} meta tags" }
+  dev_log { "Found #{meta_count} meta tags" }
   
   # Extract link tags from full document
   link_count = 0
@@ -1147,7 +1154,7 @@ private def parse_full_html_content(html_content : String, result : SummalyResul
     link_count += 1
     process_link_tag_simple(link_tag, result, base_uri, base_url_str, config, client)
   end
-  Log.info { "Found #{link_count} link tags" }
+  dev_log { "Found #{link_count} link tags" }
 end
 
 # Extract charset from raw bytes by looking for meta tags
@@ -1215,29 +1222,29 @@ end
 private def detect_and_convert_encoding_with_charset(bytes : Bytes, charset_hint : String?) : String
   # If we have a charset hint, try it first
   if charset_hint
-    Log.info { "Trying charset hint: #{charset_hint}" }
+    dev_log { "Trying charset hint: #{charset_hint}" }
     case charset_hint
     when "utf-8", "utf8"
       begin
         content = String.new(bytes, "UTF-8")
-        Log.info { "Successfully used UTF-8 encoding" }
+        dev_log { "Successfully used UTF-8 encoding" }
         return content
       rescue
-        Log.info { "UTF-8 failed, trying with skip invalid" }
+        dev_log { "UTF-8 failed, trying with skip invalid" }
         begin
           content = String.new(bytes, "UTF-8", invalid: :skip)
           return ensure_valid_utf8(content)
         rescue
-          Log.info { "UTF-8 with skip failed" }
+          dev_log { "UTF-8 with skip failed" }
         end
       end
     when "iso-8859-1", "latin-1"
       begin
         content = String.new(bytes, "ISO-8859-1")
-        Log.info { "Successfully used ISO-8859-1 encoding" }
+        dev_log { "Successfully used ISO-8859-1 encoding" }
         return ensure_valid_utf8(content)
       rescue
-        Log.info { "ISO-8859-1 failed" }
+        dev_log { "ISO-8859-1 failed" }
       end
     end
   end
