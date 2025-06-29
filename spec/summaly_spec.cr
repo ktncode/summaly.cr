@@ -99,4 +99,49 @@ describe "Summaly.cr" do
       rate_limiter.request_allowed?("https://other.com").should be_true
     end
   end
+
+  describe "ActivityPub link extraction" do
+    it "extracts ActivityPub link from HTML" do
+      html = <<-HTML
+        <html>
+        <head>
+          <link rel="alternate" type="application/activity+json" href="/users/alice">
+          <meta property="og:title" content="Alice's Profile">
+        </head>
+        <body>Content</body>
+        </html>
+        HTML
+      
+      result = extract_metadata_from_html(html, "https://example.social", "https://example.social")
+      result.activity_pub.should eq("https://example.social/users/alice")
+    end
+
+    it "handles absolute ActivityPub URLs" do
+      html = <<-HTML
+        <html>
+        <head>
+          <link rel="alternate" type="application/activity+json" href="https://other.social/users/bob">
+        </head>
+        <body>Content</body>
+        </html>
+        HTML
+      
+      result = extract_metadata_from_html(html, "https://example.social", "https://example.social")
+      result.activity_pub.should eq("https://other.social/users/bob")
+    end
+
+    it "ignores ActivityPub links without proper type" do
+      html = <<-HTML
+        <html>
+        <head>
+          <link rel="alternate" href="/users/charlie">
+        </head>
+        <body>Content</body>
+        </html>
+        HTML
+      
+      result = extract_metadata_from_html(html, "https://example.social", "https://example.social")
+      result.activity_pub.should be_nil
+    end
+  end
 end

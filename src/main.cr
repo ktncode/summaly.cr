@@ -1065,9 +1065,22 @@ private def process_link_tag_simple(link_tag : String, result : SummalyResult, b
   href = extract_attribute(link_tag, "href")
   link_type = extract_attribute(link_tag, "type")
   
-  return unless rel && href
+  return unless href
   
   href = decode_html_entities(href.strip)
+  
+  # Process ActivityPub JSON-LD links (Misskey/Mastodon support)
+  if link_type && link_type.downcase == "application/activity+json"
+    Log.info { "Found ActivityPub JSON-LD link: #{href}" }
+    activitypub_url = resolve_relative_url(href, base_uri, base_url_str, nil, "")
+    if activitypub_url
+      result.activity_pub = activitypub_url
+      Log.info { "Set ActivityPub URL: #{activitypub_url}" }
+    end
+    return
+  end
+  
+  return unless rel
   
   # Process icon links
   case rel.downcase
